@@ -26,6 +26,10 @@ gaze:
   ear_wink_threshold: 0.21
   eyebrow_raise_duration_ms: 200
   eyebrow_raise_threshold: 0.035
+  gaze_yaw_compensation: 0.004
+  gaze_pitch_compensation: 0.006
+  one_euro_min_cutoff: 0.45
+  one_euro_beta: 0.04
   gaze_calibration:
     poly_x:
     - -195638.6647241763
@@ -46,6 +50,8 @@ gaze:
   wink_max_duration_ms: 400
   wink_min_duration_ms: 80
 gestures:
+  one_euro_min_cutoff: 0.35
+  one_euro_beta: 0.15
   cursor_ema_alpha: 0.3
   custom_gesture_confidence_threshold: 0.85
   freeze_hold_duration_ms: 2000

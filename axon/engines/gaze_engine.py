@@ -1,9 +1,11 @@
 import numpy as np
 import cv2
+import time
 from dataclasses import dataclass
 from typing import Optional, Tuple, Any, Dict
 from ..utils.logger import logger
 from ..utils.timer import DwellTimer
+from ..utils.smoother import OneEuroFilter
 
 @dataclass
 class GazeResult:
@@ -32,6 +34,7 @@ class GazeEngine:
         self.monitors_config = config.get("monitors", {})
         
         self.dwell_timer = DwellTimer()
+        self.gaze_filter = None  # OneEuroFilter initialized on first point
         
         # Virtual desktop dimensions (combined monitor dimensions)
         self.laptop_w = self.monitors_config.get("laptop_width", 1920)
@@ -172,6 +175,15 @@ class GazeEngine:
                 roll = 0.0
                 
         # Map gaze vector to screen coordinates
+        # Apply head yaw and pitch compensation to the relative iris offsets
+        # This keeps the gaze stable when the head turns but eyes stay fixed on target
+        k_yaw = self.gaze_config.get("gaze_yaw_compensation", 0.004)
+        k_pitch = self.gaze_config.get("gaze_pitch_compensation", 0.006)
+        
+        # Compensate: yaw turns right (positive yaw) -> iris moves left relative to eye socket -> we add compensation
+        iris_rel_x_corr = iris_rel_x + k_yaw * yaw
+        iris_rel_y_corr = iris_rel_y + k_pitch * pitch
+        
         # Check if calibrated
         calib = self.gaze_config.get("gaze_calibration")
         if calib and "poly_x" in calib and "poly_y" in calib:
@@ -179,7 +191,7 @@ class GazeEngine:
             # X = c0 + c1*x + c2*y + c3*x^2 + c4*y^2 + c5*x*y
             cx = calib["poly_x"]
             cy = calib["poly_y"]
-            x, y = iris_rel_x, iris_rel_y
+            x, y = iris_rel_x_corr, iris_rel_y_corr
             
             # Form the 2nd degree polynomial terms
             terms = [1.0, x, y, x**2, y**2, x*y]
@@ -193,12 +205,23 @@ class GazeEngine:
             y_min, y_max = 0.35, 0.65
             
             # Map horizontally across combined laptop + monitor width
-            gaze_x = ((iris_rel_x - x_min) / (x_max - x_min)) * self.virtual_width
-            gaze_y = ((iris_rel_y - y_min) / (y_max - y_min)) * self.virtual_height
+            gaze_x = ((iris_rel_x_corr - x_min) / (x_max - x_min)) * self.virtual_width
+            gaze_y = ((iris_rel_y_corr - y_min) / (y_max - y_min)) * self.virtual_height
+            
+        # Apply OneEuroFilter for low-latency, jitter-free gaze pointing
+        t = time.time()
+        gaze_min_cutoff = self.gaze_config.get("one_euro_min_cutoff", 0.45)
+        gaze_beta = self.gaze_config.get("one_euro_beta", 0.04)
+        
+        if self.gaze_filter is None:
+            self.gaze_filter = OneEuroFilter(t0=t, x0=np.array([gaze_x, gaze_y]), mincutoff=gaze_min_cutoff, beta=gaze_beta, dcutoff=1.0)
+            smoothed_gaze = np.array([gaze_x, gaze_y])
+        else:
+            smoothed_gaze = self.gaze_filter(t, np.array([gaze_x, gaze_y]))
             
         # Clamp to screen bounds
-        gaze_x = int(np.clip(gaze_x, 0, self.virtual_width - 1))
-        gaze_y = int(np.clip(gaze_y, 0, self.virtual_height - 1))
+        gaze_x = int(np.clip(smoothed_gaze[0], 0, self.virtual_width - 1))
+        gaze_y = int(np.clip(smoothed_gaze[1], 0, self.virtual_height - 1))
         
         # Check if looking at monitor (laptop is on left, monitor is on right)
         is_looking_at_monitor = gaze_x >= self.laptop_w
@@ -216,8 +239,8 @@ class GazeEngine:
             mouth_open=mouth_open,
             eyebrows_raised=eyebrows_raised,
             is_looking_at_monitor=is_looking_at_monitor,
-            iris_relative_x=iris_rel_x,
-            iris_relative_y=iris_rel_y
+            iris_relative_x=iris_rel_x_corr,
+            iris_relative_y=iris_rel_y_corr
         )
 
     def __repr__(self) -> str:

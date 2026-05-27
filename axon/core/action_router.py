@@ -41,6 +41,11 @@ class ActionRouter:
         self.freeze_mode = False
         self.drawing_mode = False
         
+        # Mouse click state trackers and scroll histories
+        self.prev_scroll_y = {}
+        self.left_click_pressed = False
+        self.right_click_pressed = False
+        
         # Dwell timers
         self.dwell_timer = DwellTimer()
         self.cooldown_timer = CooldownTimer()
@@ -97,7 +102,20 @@ class ActionRouter:
             gesture_res_dict = self.gesture_engine.process(res.hand_result, w, h)
             face_act = self.face_engine.process(gaze_res, res.face_result)
             
-            # Detect primary hand results (prefer Right hand for mouse navigation)
+            # Detect active hands for pointer and click routing
+            cursor_hand = None
+            if gesture_res_dict:
+                # Determine which hand is moving the cursor (prefer Right hand if both are active)
+                for h_type in ["Right", "Left"]:
+                    if h_type in gesture_res_dict:
+                        g_res = gesture_res_dict[h_type]
+                        if g_res.active_gesture in ["AIR_MOUSE", "INDEX_PINCH", "MIDDLE_PINCH", "SCROLL"]:
+                            cursor_hand = h_type
+                            break
+                # Fallback to first available hand
+                if not cursor_hand:
+                    cursor_hand = list(gesture_res_dict.keys())[0]
+
             primary_hand = "Right" if "Right" in gesture_res_dict else ("Left" if "Left" in gesture_res_dict else None)
             hand_res = gesture_res_dict.get(primary_hand) if primary_hand else None
             
@@ -133,9 +151,9 @@ class ActionRouter:
                 self._update_hud_state()
                 continue
                 
-            # B. DRAWING MODE TOGGLE (Peace sign held for 1.5s)
-            peace_active = (hand_res is not None and hand_res.active_gesture == "PEACE")
-            if peace_active:
+            # B. DRAWING MODE TOGGLE (Rock gesture held for 1.5s)
+            rock_active = (hand_res is not None and hand_res.active_gesture == "ROCK")
+            if rock_active:
                 # Cycle colors or enter whiteboard drawing mode
                 if self.dwell_timer.update("drawing_toggle", True):
                     if self.dwell_timer.get_elapsed("drawing_toggle") > 1500:
@@ -150,81 +168,109 @@ class ActionRouter:
                 self.dwell_timer.update("drawing_toggle", False)
 
             # C. HAND GESTURE ACTIONS
-            if hand_res:
-                self.last_gesture = hand_res.active_gesture
-                
-                # Check swipe desk gestures
-                if hand_res.swipe_direction:
-                    dir_name = hand_res.swipe_direction
-                    self.last_action = f"SWIPE_{dir_name}"
-                    if dir_name == "LEFT":
-                        self.keyboard.hotkey("ctrl", "win", "left")  # Switch virtual desktops
-                    elif dir_name == "RIGHT":
-                        self.keyboard.hotkey("ctrl", "win", "right")
+            if gesture_res_dict:
+                # 1. Cursor Movement & Scroll (Prefer the determined cursor_hand)
+                if cursor_hand:
+                    c_res = gesture_res_dict[cursor_hand]
+                    self.last_gesture = c_res.active_gesture
+                    
+                    if c_res.active_gesture in ["AIR_MOUSE", "INDEX_PINCH", "MIDDLE_PINCH"]:
+                        self.mouse.move_to(c_res.hand_screen_x, c_res.hand_screen_y)
                         
-                # Drawing on Air Whiteboard
-                elif self.drawing_mode and hand_res.active_gesture in ["AIR_MOUSE", "PINCH"]:
-                    # In drawing mode, track index tip and add to canvas path
-                    self.drawing_points.append((hand_res.hand_screen_x, hand_res.hand_screen_y))
-                    # Clear drawing if two-hand spread is detected (which maps to OPEN_PALM on both hands)
+                    elif c_res.active_gesture == "SCROLL":
+                        current_y = c_res.hand_screen_y
+                        if cursor_hand in self.prev_scroll_y:
+                            dy = current_y - self.prev_scroll_y[cursor_hand]
+                            if abs(dy) > 4:  # Deadzone threshold
+                                # Scale scrolling amount based on displacement
+                                scroll_amount = -int(dy / 5)
+                                if scroll_amount != 0:
+                                    self.mouse.scroll(scroll_amount)
+                                    self.last_action = f"SCROLL_{'UP' if scroll_amount > 0 else 'DOWN'}"
+                        self.prev_scroll_y[cursor_hand] = current_y
+                        
+                    if c_res.active_gesture != "SCROLL":
+                        self.prev_scroll_y.pop(cursor_hand, None)
+                        
+                # 2. Mouse Click routing (from any hand)
+                # Left Click/Drag (INDEX_PINCH)
+                left_pinch_active = any(g.active_gesture == "INDEX_PINCH" for g in gesture_res_dict.values())
+                if left_pinch_active:
+                    if not self.left_click_pressed:
+                        self.mouse.press("left")
+                        self.left_click_pressed = True
+                        self.last_action = "LEFT_PRESS"
+                else:
+                    if self.left_click_pressed:
+                        self.mouse.release("left")
+                        self.left_click_pressed = False
+                        self.last_action = "LEFT_RELEASE"
+                        
+                # Right Click/Drag (MIDDLE_PINCH)
+                right_pinch_active = any(g.active_gesture == "MIDDLE_PINCH" for g in gesture_res_dict.values())
+                if right_pinch_active:
+                    if not self.right_click_pressed:
+                        self.mouse.press("right")
+                        self.right_click_pressed = True
+                        self.last_action = "RIGHT_PRESS"
+                else:
+                    if self.right_click_pressed:
+                        self.mouse.release("right")
+                        self.right_click_pressed = False
+                        self.last_action = "RIGHT_RELEASE"
+                        
+                # 3. Whiteboard Drawing
+                if self.drawing_mode and cursor_hand:
+                    c_res = gesture_res_dict[cursor_hand]
+                    if c_res.active_gesture in ["AIR_MOUSE", "INDEX_PINCH"]:
+                        self.drawing_points.append((c_res.hand_screen_x, c_res.hand_screen_y))
+                    
                     if len(gesture_res_dict) == 2 and all(g.active_gesture == "OPEN_PALM" for g in gesture_res_dict.values()):
                         self.drawing_points.clear()
                         self.last_action = "CLEAR_CANVAS"
                         
-                # Air Mouse cursor control
-                elif hand_res.active_gesture == "AIR_MOUSE":
-                    self.mouse.move_to(hand_res.hand_screen_x, hand_res.hand_screen_y)
-                    
-                # Pinch resizing window
-                elif hand_res.active_gesture == "PINCH":
-                    self.mouse.move_to(hand_res.hand_screen_x, hand_res.hand_screen_y)
-                    # Window pinch resizing trigger
-                    # If pinch-drag is sustained, resize active window based on movement
-                    # For simplicity: drag moves mouse with left click down
-                    # We can click and drag, or resize window. Let's do click and drag.
-                    self.mouse.press("left")
-                    self.last_action = "DRAG"
-                else:
-                    self.mouse.release("left")
-                    
-                # Rock gesture: Open Terminal
-                if hand_res.active_gesture == "ROCK":
-                    if not self.cooldown_timer.is_cooling_down("OPEN_TERMINAL", 2000):
-                        subprocess.Popen("cmd.exe")  # Open windows command prompt
-                        self.last_action = "OPEN_TERMINAL"
-                        self.cooldown_timer.fire("OPEN_TERMINAL")
+                # 4. Swipes and media hotkeys
+                if hand_res and hand_res.swipe_direction:
+                    dir_name = hand_res.swipe_direction
+                    self.last_action = f"SWIPE_{dir_name}"
+                    if dir_name == "LEFT":
+                        self.keyboard.hotkey("ctrl", "win", "left")
+                    elif dir_name == "RIGHT":
+                        self.keyboard.hotkey("ctrl", "win", "right")
                         
-                # Thumbs Up / Down: Volume Up / Down
-                elif hand_res.active_gesture == "THUMBS_UP":
-                    if not self.cooldown_timer.is_cooling_down("VOLUME_UP", 200):
-                        self.audio.volume_up(0.05)
-                        self.last_action = "VOLUME_UP"
-                        self.cooldown_timer.fire("VOLUME_UP")
-                elif hand_res.active_gesture == "THUMBS_DOWN":
-                    if not self.cooldown_timer.is_cooling_down("VOLUME_DOWN", 200):
-                        self.audio.volume_down(0.05)
-                        self.last_action = "VOLUME_DOWN"
-                        self.cooldown_timer.fire("VOLUME_DOWN")
-                        
-                # Fist -> Open palm: Play / Pause media
-                elif hand_res.active_gesture == "FIST":
-                    # Detect transition to OPEN_PALM
-                    self.dwell_timer.update("fist_dwell", True)
-                elif hand_res.active_gesture == "OPEN_PALM" and self.dwell_timer.get_elapsed("fist_dwell") > 200:
-                    if not self.cooldown_timer.is_cooling_down("PLAY_PAUSE", 1000):
-                        self.keyboard.press("space")
-                        self.last_action = "PLAY_PAUSE"
-                        self.cooldown_timer.fire("PLAY_PAUSE")
-                        self.dwell_timer.reset("fist_dwell")
-                        
-                # Three fingers spread -> Pinch: minimize all windows
-                elif hand_res.active_gesture == "THREE_FINGERS":
-                    if not self.cooldown_timer.is_cooling_down("MINIMIZE_ALL", 2000):
-                        self.window.minimize_all_windows()
-                        self.last_action = "SHOW_DESKTOP"
-                        self.cooldown_timer.fire("MINIMIZE_ALL")
+                if hand_res:
+                    if hand_res.active_gesture == "THUMBS_UP":
+                        if not self.cooldown_timer.is_cooling_down("VOLUME_UP", 200):
+                            self.audio.volume_up(0.05)
+                            self.last_action = "VOLUME_UP"
+                            self.cooldown_timer.fire("VOLUME_UP")
+                    elif hand_res.active_gesture == "THUMBS_DOWN":
+                        if not self.cooldown_timer.is_cooling_down("VOLUME_DOWN", 200):
+                            self.audio.volume_down(0.05)
+                            self.last_action = "VOLUME_DOWN"
+                            self.cooldown_timer.fire("VOLUME_DOWN")
+                    elif hand_res.active_gesture == "FIST":
+                        self.dwell_timer.update("fist_dwell", True)
+                    elif hand_res.active_gesture == "OPEN_PALM" and self.dwell_timer.get_elapsed("fist_dwell") > 200:
+                        if not self.cooldown_timer.is_cooling_down("PLAY_PAUSE", 1000):
+                            self.keyboard.press("space")
+                            self.last_action = "PLAY_PAUSE"
+                            self.cooldown_timer.fire("PLAY_PAUSE")
+                            self.dwell_timer.reset("fist_dwell")
+                    elif hand_res.active_gesture == "THREE_FINGERS":
+                        if not self.cooldown_timer.is_cooling_down("MINIMIZE_ALL", 2000):
+                            self.window.minimize_all_windows()
+                            self.last_action = "SHOW_DESKTOP"
+                            self.cooldown_timer.fire("MINIMIZE_ALL")
             else:
-                self.mouse.release("left")
+                # No hands detected - safety release
+                if self.left_click_pressed:
+                    self.mouse.release("left")
+                    self.left_click_pressed = False
+                if self.right_click_pressed:
+                    self.mouse.release("right")
+                    self.right_click_pressed = False
+                self.prev_scroll_y.clear()
                 
             # D. EYE ACTIONS (Wink Clicking)
             if gaze_res and not hand_res:  # Only wink-click if hand is not performing gestures (safety fallback)

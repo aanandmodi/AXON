@@ -3,7 +3,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Tuple, Any, Dict
 from ..utils.logger import logger
-from ..utils.smoother import EMASmoother
+from ..utils.smoother import OneEuroFilter
 from ..utils.timer import VelocityTracker, CooldownTimer
 
 @dataclass
@@ -26,11 +26,10 @@ class GestureEngine:
         self.gesture_config = config.get("gestures", {})
         self.monitors_config = config.get("monitors", {})
         
-        # Smoothers for cursor movement (separate smoothers for Left and Right hands)
-        alpha = self.gesture_config.get("cursor_ema_alpha", 0.3)
-        self.smoothers = {
-            "Left": EMASmoother(alpha=alpha),
-            "Right": EMASmoother(alpha=alpha)
+        # OneEuroFilter for cursor movement (separate filter for Left and Right hands)
+        self.filters = {
+            "Left": None,
+            "Right": None
         }
         
         # Velocity trackers for swipe detection
@@ -92,13 +91,22 @@ class GestureEngine:
             raw_x = 1.0 - pts[self.INDEX_TIP][0]
             raw_y = pts[self.INDEX_TIP][1]
             
-            # Apply EMA smoothing
-            smoothed_coords = self.smoothers[hand_type].smooth(np.array([raw_x, raw_y]))
+            # Apply OneEuroFilter
+            t = time.time()
+            min_cutoff = self.gesture_config.get("one_euro_min_cutoff", 0.35)
+            beta = self.gesture_config.get("one_euro_beta", 0.15)
+            
+            if self.filters[hand_type] is None:
+                self.filters[hand_type] = OneEuroFilter(t0=t, x0=np.array([raw_x, raw_y]), mincutoff=min_cutoff, beta=beta, dcutoff=1.0)
+                smoothed_coords = np.array([raw_x, raw_y])
+            else:
+                smoothed_coords = self.filters[hand_type](t, np.array([raw_x, raw_y]))
+                
             sm_x, sm_y = smoothed_coords[0], smoothed_coords[1]
             
-            # Map normalized [0.1, 0.9] of camera frame to full virtual screen
-            norm_x = (sm_x - 0.1) / 0.8
-            norm_y = (sm_y - 0.1) / 0.8
+            # Map normalized [0.12, 0.88] of camera frame to full virtual screen (increases reachability to screen edges)
+            norm_x = (sm_x - 0.12) / 0.76
+            norm_y = (sm_y - 0.12) / 0.76
             
             # Clamp to [0.0, 1.0]
             norm_x = np.clip(norm_x, 0.0, 1.0)
