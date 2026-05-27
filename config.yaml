@@ -1,0 +1,62 @@
+advanced:
+  emotion_theming: false
+  lock_on_absence_seconds: 10
+  presence_detection: false
+  use_gpu: true
+cameras:
+  laptop_fps: 60
+  laptop_index: 0
+  laptop_resolution:
+  - 1280
+  - 720
+  phone_fps: 30
+  phone_resolution:
+  - 640
+  - 480
+  phone_rtsp_url: rtsp://192.168.1.8:8080/h264_ulaw.sdp
+  use_phone: true
+face:
+  action_cooldown_ms: 1500
+  head_shake_velocity_threshold: 150
+  head_tilt_scroll_threshold_deg: 15
+  nod_velocity_threshold: 120
+  smile_duration_ms: 1500
+  smile_threshold: 0.48
+gaze:
+  ear_wink_threshold: 0.21
+  eyebrow_raise_duration_ms: 200
+  eyebrow_raise_threshold: 0.035
+  gaze_calibration:
+    poly_x:
+    - -195638.6647241763
+    - 271191.70387651084
+    - 619255.3991924094
+    - -90464.98994348441
+    - -474916.187308425
+    - -435630.7427894959
+    poly_y:
+    - -19383.088898995757
+    - 34429.90407329718
+    - 54208.35079777452
+    - -7444.882954029111
+    - -34399.029112364246
+    - -56617.08033083229
+  mouth_open_duration_ms: 300
+  mouth_open_threshold: 0.05
+  wink_max_duration_ms: 400
+  wink_min_duration_ms: 80
+gestures:
+  cursor_ema_alpha: 0.3
+  custom_gesture_confidence_threshold: 0.85
+  freeze_hold_duration_ms: 2000
+  gesture_cooldown_ms: 800
+  pinch_threshold: 0.05
+  swipe_velocity_threshold: 800
+monitors:
+  laptop_height: 1080
+  laptop_width: 1920
+  layout_order:
+  - laptop
+  - monitor
+  monitor_height: 1080
+  monitor_width: 1920
